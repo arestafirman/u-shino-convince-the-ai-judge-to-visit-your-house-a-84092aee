@@ -1,336 +1,534 @@
 #!/usr/bin/env python3
-"""Procedural one-image letter for Make.fun competition
-u-shino-convince-the-ai-judge-to-visit-your-house-a-84092aee.
+"""Convince the AI Judge to Visit Your House: A Letter in One Image.
 
-Draws a 1024x1024 PNG letter (grandmother's kitchen header, the letter
-body, footer with signature + stamp + mini chair) entirely with Pillow
-shapes and text. Offline, deterministic, no network, no clock.
-Writes /output/entry.png
+Stdlib-only procedural drawing. No Pillow, no system fonts, no file
+reads, no network, no clock. Writes a single 1024x1024 PNG to
+/output/entry.png with a hand-written PNG encoder (struct + zlib).
+
+Letter text is verbatim from the teardown SPEC (768 characters total,
+counted per sentence). Artwork: grandmother's kitchen header (stove
+with 3 numbered pots, wall clock at 12:00, Sunday-noon window light),
+the letter body, and a footer with signature, stamp, and the
+tie-breaker chair No. 12 with a JUDGE name tag.
 """
 
+import math
 import os
+import struct
+import zlib
 
-from PIL import Image, ImageDraw, ImageFont
-
-W, H = 1024, 1024
+W = 1024
+H = 1024
 OUT = "/output/entry.png"
 
-HEADER_H = 288          # header illustration band
-BODY_TOP = HEADER_H
-BODY_BOTTOM = 884       # body band: 596 px
-FOOTER_TOP = BODY_BOTTOM
+# ---------------------------------------------------------------- palette
+INK = (43, 33, 24)        # dark brown ink
+PAPER = (251, 243, 223)    # letter paper cream
+WALL = (242, 223, 184)     # header wall warm cream
+BG = (234, 217, 176)       # page background tan
+ACCENT = (180, 85, 31)     # burnt orange accent (numbers, stamp)
+GREEN = (78, 122, 58)      # leaf green
+WOOD = (107, 74, 42)       # chair / window frame brown
+DARKWOOD = (62, 42, 26)    # stove dark brown
+TRIM = (201, 168, 106)     # paper border gold-tan
+SKY = (168, 207, 224)      # window sky
+SUN = (246, 201, 69)       # noon sun
+POT1 = (201, 106, 43)      # pot 1 orange
+POT2 = (78, 122, 58)       # pot 2 green
+POT3 = (180, 85, 31)       # pot 3 burnt orange (hero, bigger)
+STEAM = (253, 248, 236)    # steam white
+WHITE = (255, 255, 255)
 
-SERIF = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"
-SERIF_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"
-SERIF_ITALIC = "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf"
+# ---------------------------------------------------------------- canvas
+buf = bytearray(W * H * 3)
 
-# ---- palette (flat warm kitchen) ----
-WALL = (243, 222, 174)
-WALL_SHADE = (238, 210, 156)
-PAPER = (251, 243, 223)
-PAPER_EDGE = (232, 214, 180)
-INK = (46, 33, 24)
-ACCENT = (178, 80, 28)        # burnt orange, for the key numbers
-WOOD = (122, 74, 34)
-WOOD_DARK = (94, 56, 26)
-STOVE = (62, 56, 50)
-POT1 = (74, 96, 58)           # leaf green pot
-POT2 = (146, 74, 40)          # terracotta pot
-POT3 = (58, 74, 96)           # deep blue pot, grandma's, slightly bigger
-LID = (214, 192, 150)
-SKY = (251, 215, 116)
-SUN = (245, 166, 35)
-LEAF = (92, 122, 58)
-STAMP_RED = (150, 40, 30)
-CREAM = (255, 248, 232)
 
-GREETING = "Dear Judge,"
+def px(x, y, c):
+    if 0 <= x < W and 0 <= y < H:
+        i = (y * W + x) * 3
+        buf[i] = c[0]
+        buf[i + 1] = c[1]
+        buf[i + 2] = c[2]
 
-BODY_PARAS = [
-    "You have read ten thousand invitations and never once been invited "
-    "to sit down. This one is different: there is a chair for you, and "
-    "nobody will ask you to score it.",
-    "Come to my grandmother's house on Sunday. She has cooked rendang "
-    "for 41 years, and for 41 years our family has argued over whose "
-    "pot is best. Eleven of us vote every year. This year the vote is "
-    "tied, six to five, and the tie-breaker chair is empty.",
-    "It has your name on it \u2014 taped, in her handwriting, to the "
-    "back of chair number 12. The rendang in pot number 3 is hers. "
-    "Taste it, and tell us the truth: she can take it. She has waited "
-    "41 years for a judge who cannot be bribed with extra rice.",
+
+def rect(x, y, w, h, c):
+    x0 = max(0, x)
+    y0 = max(0, y)
+    x1 = min(W, x + w)
+    y1 = min(H, y + h)
+    for yy in range(y0, y1):
+        base = (yy * W + x0) * 3
+        for xx in range(x0, x1):
+            i = base + (xx - x0) * 3
+            buf[i] = c[0]
+            buf[i + 1] = c[1]
+            buf[i + 2] = c[2]
+
+
+def line(x0, y0, x1, y1, c, t=1):
+    dx = abs(x1 - x0)
+    dy = -abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx + dy
+    while True:
+        for a in range(t):
+            for b in range(t):
+                px(x0 + a, y0 + b, c)
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x0 += sx
+        if e2 <= dx:
+            err += dx
+            y0 += sy
+
+
+def circle(cx, cy, r, c):
+    for yy in range(cy - r, cy + r + 1):
+        for xx in range(cx - r, cx + r + 1):
+            if (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r * r:
+                px(xx, yy, c)
+
+
+def ellipse(cx, cy, rx, ry, c):
+    for yy in range(cy - ry, cy + ry + 1):
+        for xx in range(cx - rx, cx + rx + 1):
+            if ((xx - cx) * (xx - cx)) / (rx * rx) + ((yy - cy) * (yy - cy)) / (ry * ry) <= 1.0:
+                px(xx, yy, c)
+
+
+def get_px(x, y):
+    if 0 <= x < W and 0 <= y < H:
+        i = (y * W + x) * 3
+        return (buf[i], buf[i + 1], buf[i + 2])
+    return (0, 0, 0)
+
+
+# ---------------------------------------------------------------- 5x7 font
+# Each glyph: 7 rows of 5 chars, '#' = ink. Written from scratch.
+FONT = {
+    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
+    '"': (".#.#.", ".#.#.", ".#.#.", ".....", ".....", ".....", "....."),
+    "#": (".#.#.", ".#.#.", "#####", ".#.#.", "#####", ".#.#.", ".#.#."),
+    "$": ("..#..", ".####.", "#.#.#.", ".###..", "..#.#.", ".####.", "..#.."),
+    "%": ("##..#", "##.#.", "....#", "...#.", "..#..", ".#...", "#.##."),
+    "&": (".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"),
+    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
+    "(": ("...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."),
+    ")": (".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."),
+    "*": (".....", ".#.#.", "..#..", "#####", "..#..", ".#.#.", "....."),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    ",": (".....", ".....", ".....", ".....", "..#..", "..#..", ".#..."),
+    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+    ".": (".....", ".....", ".....", ".....", ".....", ".....", "..#.."),
+    "/": ("....#", "...#.", "...#.", "..#..", ".#...", ".#...", "#...."),
+    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
+    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+    "6": (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "...#.", "..#..", "..#..", "..#.."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
+    ":": (".....", "..#..", ".....", ".....", ".....", "..#..", "....."),
+    ";": (".....", "..#..", ".....", ".....", "..#..", "..#..", ".#..."),
+    "<": ("...#.", "..#..", ".#...", "#....", ".#...", "..#..", "...#."),
+    "=": (".....", ".....", "#####", ".....", "#####", ".....", "....."),
+    ">": (".#...", "..#..", "...#.", "....#", "...#.", "..#..", ".#..."),
+    "?": (".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.."),
+    "@": (".###.", "#...#", "#.###", "#.#.#", "#.#..", "#....", ".###."),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."),
+    "D": ("###..", "#..#.", "#...#", "#...#", "#...#", "#..#.", "###.."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "##..#", "##..#", "#.#.#", "#..##", "#..##", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+    "[": (".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###."),
+    "\\": ("#....", "#....", ".#...", ".#...", "..#..", "..#..", "...#."),
+    "]": (".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###."),
+    "^": ("..#..", ".#.#.", ".....", ".....", ".....", ".....", "....."),
+    "_": (".....", ".....", ".....", ".....", ".....", ".....", "#####"),
+    "`": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
+    "a": (".....", ".....", ".###.", "....#", ".####", "#...#", ".###."),
+    "b": ("#....", "#....", "####.", "#...#", "#...#", "#...#", "####."),
+    "c": (".....", ".....", ".###.", "#....", "#....", "#...#", ".###."),
+    "d": ("....#", "....#", ".####", "#...#", "#...#", "#...#", ".####"),
+    "e": (".....", ".....", ".###.", "#...#", "#####", "#....", ".###."),
+    "f": ("..##.", ".#..#", ".#...", "####.", ".#...", ".#...", ".#..."),
+    "g": (".....", ".####", "#...#", "#...#", ".####", "....#", ".###."),
+    "h": ("#....", "#....", "####.", "#...#", "#...#", "#...#", "#...#"),
+    "i": ("..#..", ".....", ".##..", "..#..", "..#..", "..#..", ".###."),
+    "j": ("...#.", ".....", "..##.", "...#.", "...#.", "...#.", ".##.."),
+    "k": ("#....", "#....", "#..#.", "#.#..", "##...", "#.#..", "#..#."),
+    "l": (".##..", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "m": (".....", ".....", "##.#.", "#.#.#", "#.#.#", "#.#.#", "#.#.#"),
+    "n": (".....", ".....", "####.", "#...#", "#...#", "#...#", "#...#"),
+    "o": (".....", ".....", ".###.", "#...#", "#...#", "#...#", ".###."),
+    "p": (".....", ".....", "####.", "#...#", "#...#", "####.", "#...."),
+    "q": (".....", ".....", ".####", "#...#", "#...#", ".####", "....#"),
+    "r": (".....", ".....", "#.##.", "##..#", "#....", "#....", "#...."),
+    "s": (".....", ".....", ".####", "#....", ".###.", "....#", "####."),
+    "t": (".#...", ".#...", "####.", ".#...", ".#...", ".#...", "..##."),
+    "u": (".....", ".....", "#...#", "#...#", "#...#", "#..##", ".##.#"),
+    "v": (".....", ".....", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
+    "w": (".....", ".....", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."),
+    "x": (".....", ".....", "#...#", ".#.#.", "..#..", ".#.#.", "#...#"),
+    "y": (".....", ".....", "#...#", "#...#", ".####", "....#", ".###."),
+    "z": (".....", ".....", "#####", "...#.", "..#..", ".#...", "#####"),
+    "{": ("...##.", "..#..", "..#..", ".##..", "..#..", "..#..", "...##."),
+    "|": ("..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "}": (".##..", "..#..", "..#..", "..##.", "..#..", "..#..", ".##.."),
+    "~": (".....", ".....", ".##.#", "#.#.#", ".....", ".....", "....."),
+    "\u2014": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+}
+
+ADV = 6  # glyph advance in font units (5 + 1 gap)
+
+
+def glyph_w(text, scale, bold=False):
+    per = ADV + (1 if bold else 0)
+    return len(text) * per * scale
+
+
+def draw_glyph(x, y, ch, scale, color, bold=False):
+    """Draw one glyph with 2x supersampling: render the 5x7 bitmap into
+    a 2x-resolution mask, then average each 2x2 block when blending onto
+    the canvas, so glyph edges are smooth instead of pixel-jagged.
+    Output size is identical to the non-supersampled version."""
+    g = FONT.get(ch)
+    if g is None:
+        g = FONT["?"]
+    s2 = scale * 2
+    cols = 6 if bold else 5
+    stride = cols * s2
+    mask = bytearray(stride * 7 * s2)
+    for row in range(7):
+        bits = g[row]
+        for col in range(5):
+            if bits[col] == "#":
+                for yy in range(row * s2, (row + 1) * s2):
+                    base = yy * stride + col * s2
+                    for xx in range(s2):
+                        mask[base + xx] = 1
+                if bold:
+                    for yy in range(row * s2, (row + 1) * s2):
+                        base = yy * stride + (col + 1) * s2
+                        for xx in range(s2):
+                            mask[base + xx] = 1
+    for oy in range(7 * scale):
+        my = oy * 2
+        for ox in range(cols * scale):
+            mx = ox * 2
+            cov = (mask[my * stride + mx] + mask[my * stride + mx + 1]
+                   + mask[(my + 1) * stride + mx]
+                   + mask[(my + 1) * stride + mx + 1]) * 0.25
+            if cov:
+                old = get_px(x + ox, y + oy)
+                px(x + ox, y + oy,
+                   (int(old[0] + (color[0] - old[0]) * cov),
+                    int(old[1] + (color[1] - old[1]) * cov),
+                    int(old[2] + (color[2] - old[2]) * cov)))
+
+
+def draw_word(x, y, word, scale, color, bold=False):
+    cx = x
+    per = (ADV + (1 if bold else 0)) * scale
+    for ch in word:
+        draw_glyph(cx, y, ch, scale, color, bold)
+        cx += per
+    return cx - x
+
+
+def word_base(word):
+    return word.strip(".,:;!?")
+
+
+# ---------------------------------------------------------------- letter
+# Verbatim from SPEC section 3. Sentence lengths sum to 768 characters.
+SENTENCES = [
+    "Dear Judge,",
+    "You have read ten thousand invitations and never once been invited to sit down.",
+    "This one is different: there is a chair for you, and nobody will ask you to score it.",
+    "Come to my grandmother's house on Sunday.",
+    "She has cooked rendang for 41 years, and for 41 years our family has argued over whose pot is best.",
+    "Eleven of us vote every year.",
+    "This year the vote is tied, six to five, and the tie-breaker chair is empty.",
+    "It has your name on it \u2014 taped, in her handwriting, to the back of chair number 12.",
+    "The rendang in pot number 3 is hers.",
+    "Taste it, and tell us the truth: she can take it.",
+    "She has waited 41 years for a judge who cannot be bribed with extra rice.",
     "No scores to file. Just lunch, at noon, and one honest verdict.",
+    "Yours,",
+    "Ares \u2014 the grandson who sets the table",
+]
+LETTER_CHARS = sum(len(s) for s in SENTENCES)  # 768
+
+PARAS = [
+    SENTENCES[0],
+    " ".join(SENTENCES[1:3]),
+    " ".join(SENTENCES[3:7]),
+    " ".join(SENTENCES[7:11]),
+    SENTENCES[11],
+    SENTENCES[12],
+    SENTENCES[13],
 ]
 
-CLOSING = "Yours,"
+ACCENT_WORDS = {"41", "12", "3", "six", "five"}
 
 
-def font(path, size):
-    return ImageFont.truetype(path, size)
+def is_accent(word, prev_base):
+    base = word_base(word)
+    if base in ACCENT_WORDS:
+        return True
+    return base == "to" and prev_base == "six"
 
 
-def is_key_word(word):
-    """Words carrying a number get bold + accent: 41, 6-5, 12, 3."""
-    return any(ch.isdigit() for ch in word)
-
-
-# ---------------------------------------------------------------- header
-def draw_header(img, d):
-    d.rectangle([0, 0, W, HEADER_H], fill=WALL)
-    # soft floor shadow band at the bottom of the wall
-    d.rectangle([0, HEADER_H - 26, W, HEADER_H], fill=WALL_SHADE)
-
-    # ---- window, right side: Sunday noon sun ----
-    wx0, wy0, wx1, wy1 = 688, 26, 972, 196
-    d.rectangle([wx0 - 8, wy0 - 8, wx1 + 8, wy1 + 8], fill=WOOD)
-    d.rectangle([wx0, wy0, wx1, wy1], fill=SKY)
-    # sun + rays
-    sx, sy = 830, 108
-    for r, col in ((58, (250, 190, 60)), (40, SUN)):
-        d.ellipse([sx - r, sy - r, sx + r, sy + r], fill=col)
-    for ang in range(0, 360, 30):
-        import math
-        a = math.radians(ang)
-        x0 = sx + int(64 * math.cos(a))
-        y0 = sy + int(64 * math.sin(a))
-        x1 = sx + int(80 * math.cos(a))
-        y1 = sy + int(80 * math.sin(a))
-        d.line([x0, y0, x1, y1], fill=SUN, width=5)
-    # window cross bars
-    d.rectangle([wx0, (wy0 + wy1) // 2 - 4, wx1, (wy0 + wy1) // 2 + 4], fill=WOOD)
-    d.rectangle([(wx0 + wx1) // 2 - 4, wy0, (wx0 + wx1) // 2 + 4, wy1], fill=WOOD)
-    # sunbeam polygons spilling left onto the wall
-    beam = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    bd = ImageDraw.Draw(beam)
-    bd.polygon([(700, 196), (560, 288), (430, 288), (640, 196)],
-               fill=(255, 236, 160, 70))
-    bd.polygon([(880, 196), (800, 288), (700, 288), (820, 196)],
-               fill=(255, 236, 160, 55))
-    img.paste(Image.alpha_composite(img.convert("RGBA"), beam).convert("RGB"),
-              (0, 0))
-
-    # ---- wall clock showing 12:00 (kept clear of pot 1 below) ----
-    cx, cy, cr = 118, 80, 44
-    d.ellipse([cx - cr - 6, cy - cr - 6, cx + cr + 6, cy + cr + 6], fill=WOOD_DARK)
-    d.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=CREAM)
-    for i in range(12):
-        import math
-        a = math.radians(i * 30)
-        x0 = cx + int((cr - 8) * math.sin(a))
-        y0 = cy - int((cr - 8) * math.cos(a))
-        x1 = cx + int((cr - 2) * math.sin(a))
-        y1 = cy - int((cr - 2) * math.cos(a))
-        d.line([x0, y0, x1, y1], fill=INK, width=3 if i % 3 == 0 else 1)
-    # both hands point straight up: 12:00
-    d.line([cx, cy, cx, cy - cr + 18], fill=INK, width=4)   # minute hand
-    d.line([cx, cy, cx, cy - cr + 30], fill=INK, width=6)   # hour hand
-    d.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=ACCENT)
-
-    # ---- hanging herbs, left of the window ----
-    for hx, hy, ln in ((330, 60, 46), (372, 52, 58), (414, 62, 40)):
-        d.line([hx, hy - 14, hx, hy], fill=WOOD_DARK, width=2)
-        for k in range(4):
-            yy = hy + k * (ln // 4)
-            d.ellipse([hx - 9, yy, hx + 9, yy + 12], fill=LEAF)
-
-    # ---- stove + three numbered pots ----
-    d.rectangle([0, 232, W, HEADER_H], fill=WOOD)          # counter top
-    d.rectangle([0, 240, W, HEADER_H], fill=WOOD_DARK)     # counter front
-    d.rectangle([0, 232, W, 240], fill=(164, 110, 58))
-    # stove slab
-    d.rectangle([36, 214, 664, 240], fill=STOVE)
-    for bx in (130, 330, 520):
-        d.ellipse([bx - 52, 218, bx + 52, 238], fill=(30, 27, 24))
-
-    def pot(x0, y_bottom, w, h, body_col, number):
-        x1 = x0 + w
-        y0 = y_bottom - h
-        # handles
-        d.rectangle([x0 - 14, y0 + 14, x0, y0 + 26], fill=WOOD_DARK)
-        d.rectangle([x1, y0 + 14, x1 + 14, y0 + 26], fill=WOOD_DARK)
-        # body + lid
-        d.rounded_rectangle([x0, y0 + 12, x1, y_bottom], radius=10, fill=body_col)
-        d.ellipse([x0 - 4, y0 - 6, x1 + 4, y0 + 18], fill=LID)
-        d.ellipse([x0 + w // 2 - 8, y0 - 14, x0 + w // 2 + 8, y0 + 2], fill=WOOD_DARK)
-        # number badge
-        fnum = font(SERIF_BOLD, 34 if w < 150 else 38)
-        bx, by = x0 + w // 2, y0 + 12 + (h - 12) // 2 + 4
-        d.ellipse([bx - 24, by - 24, bx + 24, by + 24], fill=CREAM)
-        tw = d.textlength(number, font=fnum)
-        d.text((bx - tw / 2, by - 20), number, font=fnum, fill=INK)
-        return y0
-
-    pot(78, 216, 118, 82, POT1, "1")
-    pot(268, 216, 118, 82, POT2, "2")
-    pot3_top = pot(436, 216, 158, 100, POT3, "3")   # grandma's pot, bigger
-
-    # ---- steam curls above pot 3: smooth wavy lines ----
-    import math
-    steam = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(steam)
-    for sx0 in (486, 516, 546):
-        pts = []
-        for k in range(25):
-            yy = pot3_top - 6 - k * 3
-            xx = sx0 + 6 * math.sin(k * 0.55)
-            pts.append((xx, yy))
-        sd.line(pts, fill=(255, 255, 255, 170), width=5, joint="curve")
-    img.paste(Image.alpha_composite(img.convert("RGBA"), steam).convert("RGB"),
-              (0, 0))
-
-
-# ---------------------------------------------------------------- body
-def wrap_paragraph(text, freg, fbold, max_w):
-    """Greedy wrap; returns list of lines, each a list of (word, font, col)."""
-    space_w = freg.getlength(" ")
-    lines, cur, cur_w = [], [], 0.0
-    for word in text.split(" "):
-        if is_key_word(word):
-            f, col = fbold, ACCENT
-        else:
-            f, col = freg, INK
-        ww = f.getlength(word)
-        add = ww if not cur else ww + space_w
+def wrap_para(text, max_w, scale):
+    """Greedy word wrap. Returns list of lines; each line is a list of
+    (word, accent) tuples."""
+    words = text.split(" ")
+    lines = []
+    cur = []
+    cur_w = 0
+    prev_base = ""
+    space_w = ADV * scale
+    for word in words:
+        accent = is_accent(word, prev_base)
+        prev_base = word_base(word)
+        ww = glyph_w(word, scale, bold=accent)
+        add = ww if not cur else space_w + ww
         if cur and cur_w + add > max_w:
             lines.append(cur)
-            cur, cur_w = [(word, f, col)], ww
+            cur = [(word, accent)]
+            cur_w = ww
         else:
-            cur.append((word, f, col))
+            cur.append((word, accent))
             cur_w += add
     if cur:
         lines.append(cur)
     return lines
 
 
-def layout_body(max_w, body_h):
-    """Pick the largest body size (30-33px) whose lines fit body_h."""
-    for size in (33, 32, 31, 30):
-        freg = font(SERIF, size)
-        fbold = font(SERIF_BOLD, size)
-        fgreet = font(SERIF_BOLD, 44)
-        greet_h = int(44 * 1.25)
-        lines = []
-        for para in BODY_PARAS:
-            lines.extend(wrap_paragraph(para, freg, fbold, max_w))
-        n_lines = len(lines)
-        for spacing in (1.30, 1.24, 1.18):
-            total = greet_h + 16 + int(n_lines * size * spacing) \
-                + (len(BODY_PARAS) - 1) * 12 + 18 + int(30 * 1.3)
-            if total <= body_h:
-                return size, spacing, fgreet, freg, fbold, lines
-    # fallback: smallest size, tightest spacing
-    size = 30
-    freg = font(SERIF, size)
-    fbold = font(SERIF_BOLD, size)
-    fgreet = font(SERIF_BOLD, 44)
-    lines = []
-    for para in BODY_PARAS:
-        lines.extend(wrap_paragraph(para, freg, fbold, max_w))
-    return size, 1.18, fgreet, freg, fbold, lines
+def draw_line(x, y, line_words, scale):
+    cx = x
+    space_w = ADV * scale
+    for i, (word, accent) in enumerate(line_words):
+        if i:
+            cx += space_w
+        color = ACCENT if accent else INK
+        w = draw_word(cx, y, word, scale, color, bold=accent)
+        cx += w
+    return cx
 
 
-def draw_body(img, d):
-    d.rectangle([0, BODY_TOP, W, BODY_BOTTOM], fill=PAPER)
-    d.line([0, BODY_TOP, W, BODY_TOP], fill=PAPER_EDGE, width=2)
-    d.line([0, BODY_BOTTOM - 1, W, BODY_BOTTOM - 1], fill=PAPER_EDGE, width=2)
-
-    margin = 56
-    max_w = W - 2 * margin
-    inner_h = BODY_BOTTOM - BODY_TOP - 20 - 14
-    size, spacing, fgreet, freg, fbold, lines = layout_body(max_w, inner_h)
-    fclosing = font(SERIF_ITALIC, 30)
-
-    y = BODY_TOP + 20
-    d.text((margin, y), GREETING, font=fgreet, fill=INK)
-    y += int(44 * 1.25) + 14
-
-    # re-walk paragraphs to keep paragraph gaps
-    line_h = int(size * spacing)
-    para_idx = 0
-    counts = []
-    for para in BODY_PARAS:
-        counts.append(len(wrap_paragraph(para, freg, fbold, max_w)))
-    flat = lines
-    pos = 0
-    for pi, cnt in enumerate(counts):
-        for _ in range(cnt):
-            x = margin
-            for j, (word, f, col) in enumerate(flat[pos]):
-                if j > 0:
-                    x += freg.getlength(" ")
-                d.text((x, y), word, font=f, fill=col)
-                x += f.getlength(word)
-            y += line_h
-            pos += 1
-        y += 12  # paragraph gap
-    # closing line
-    d.text((margin, y - 2), CLOSING, font=fclosing, fill=INK)
+# ---------------------------------------------------------------- header
+def draw_header():
+    rect(0, 0, W, 280, WALL)
+    # window, left: Sunday-noon light
+    rect(56, 30, 216, 184, WOOD)
+    rect(68, 42, 192, 160, SKY)
+    circle(150, 108, 30, SUN)
+    for k in range(8):
+        a = k * math.pi / 4
+        line(int(150 + 38 * math.cos(a)), int(108 + 38 * math.sin(a)),
+             int(150 + 52 * math.cos(a)), int(108 + 52 * math.sin(a)),
+             SUN, 3)
+    rect(160, 42, 8, 160, WOOD)   # mullion vertical
+    rect(68, 116, 192, 8, WOOD)   # mullion horizontal
+    rect(48, 214, 232, 14, WOOD)  # sill
+    # wall clock, 12:00
+    circle(512, 128, 54, WOOD)
+    circle(512, 128, 47, PAPER)
+    for k in range(12):
+        a = k * math.pi / 6
+        line(int(512 + 40 * math.cos(a)), int(128 + 40 * math.sin(a)),
+             int(512 + 46 * math.cos(a)), int(128 + 46 * math.sin(a)),
+             INK, 2)
+    line(512, 128, 512, 92, INK, 4)   # minute hand -> 12
+    line(512, 128, 512, 104, INK, 6)  # hour hand -> 12
+    circle(512, 128, 5, ACCENT)
+    # stove, right, with 3 numbered pots (lids, handles, burners)
+    rect(632, 182, 348, 14, DARKWOOD)  # stove top slab
+    rect(640, 196, 332, 84, (90, 58, 38))  # stove body
+    rect(660, 232, 292, 44, (74, 48, 30))  # oven door
+    rect(660, 232, 292, 4, (40, 26, 16))   # oven door top edge
+    rect(760, 244, 92, 6, (40, 26, 16))    # oven handle
+    rect(660, 214, 60, 8, DARKWOOD)    # burner knobs
+    rect(740, 214, 60, 8, DARKWOOD)
+    rect(900, 214, 60, 8, DARKWOOD)
+    # burner rings on the stove top, peeking out around each pot
+    ellipse(686, 186, 50, 5, (40, 26, 16))
+    ellipse(796, 186, 50, 5, (40, 26, 16))
+    ellipse(918, 186, 62, 5, (40, 26, 16))
+    # pot 1: body 80x48
+    rect(634, 148, 14, 8, DARKWOOD)    # left handle
+    rect(726, 148, 14, 8, DARKWOOD)    # right handle
+    rect(646, 134, 80, 48, POT1)
+    ellipse(686, 134, 44, 10, (168, 84, 32))  # lid
+    circle(686, 122, 5, DARKWOOD)      # lid knob
+    draw_word(677, 150, "1", 3, WHITE)
+    # pot 2: body 80x48
+    rect(744, 148, 14, 8, DARKWOOD)
+    rect(836, 148, 14, 8, DARKWOOD)
+    rect(756, 134, 80, 48, POT2)
+    ellipse(796, 134, 44, 10, (62, 97, 48))   # lid
+    circle(796, 122, 5, DARKWOOD)      # lid knob
+    draw_word(787, 150, "2", 3, WHITE)
+    # pot 3: hero, body 108x64 = 35% wider and 33% taller than pots 1-2
+    rect(850, 138, 16, 9, DARKWOOD)
+    rect(972, 138, 16, 9, DARKWOOD)
+    rect(864, 118, 108, 64, POT3)
+    ellipse(918, 118, 58, 12, (147, 63, 22))  # lid
+    circle(918, 104, 6, DARKWOOD)      # lid knob
+    draw_word(906, 140, "3", 4, WHITE)
+    # steam wisps above pot 3's lid
+    for col, phase in ((898, 0.0), (922, 2.1), (946, 4.2)):
+        for step in range(9):
+            yy = 96 - step * 7
+            xx = col + int(7 * math.sin(step * 0.9 + phase))
+            circle(xx, yy, 5, STEAM)
 
 
 # ---------------------------------------------------------------- footer
-def draw_footer(img, d):
-    d.rectangle([0, FOOTER_TOP, W, H], fill=(246, 232, 200))
-    d.line([0, FOOTER_TOP, W, FOOTER_TOP], fill=PAPER_EDGE, width=2)
+def draw_signature(x0, y0, color):
+    """Handwritten-style 'Ares': flowing polyline strokes, slanted,
+    drawn with thick lines instead of the pixel bitmap font."""
+    strokes = [
+        # capital A: up-stroke, down-stroke, crossbar
+        [(78, 950), (96, 908), (108, 902), (120, 926), (134, 950)],
+        [(90, 932), (116, 930)],
+        # r: small loop
+        [(140, 948), (142, 928), (152, 924), (161, 932), (158, 948)],
+        # e: loop
+        [(164, 948), (172, 924), (184, 924), (189, 937), (179, 946), (166, 948)],
+        # s + flourish tail
+        [(193, 948), (203, 928), (213, 934), (205, 948), (217, 952),
+         (236, 944), (256, 950)],
+    ]
+    for pts in strokes:
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            line(ax, ay, bx, by, color, 3)
 
-    # signature
-    fsig = font(SERIF_ITALIC, 52)
-    d.text((56, FOOTER_TOP + 14), "Ares", font=fsig, fill=INK)
-    fsub = font(SERIF_ITALIC, 21)
-    d.text((58, FOOTER_TOP + 78), "the grandson who sets the table",
-           font=fsub, fill=(90, 66, 44))
 
-    # stamp: rotated rounded rectangle, "HOUSE No. 12 - SUNDAY, NOON"
-    stamp = Image.new("RGBA", (330, 92), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(stamp)
-    sd.rounded_rectangle([4, 4, 325, 87], radius=10,
-                         outline=STAMP_RED, width=3)
-    sd.rounded_rectangle([10, 10, 319, 81], radius=7,
-                         outline=STAMP_RED, width=1)
-    f1 = font(SERIF_BOLD, 26)
-    f2 = font(SERIF_BOLD, 22)
-    t1, t2 = "HOUSE No. 12", "SUNDAY, NOON"
-    sd.text(((330 - sd.textlength(t1, font=f1)) / 2, 12), t1,
-            font=f1, fill=STAMP_RED)
-    sd.text(((330 - sd.textlength(t2, font=f2)) / 2, 46), t2,
-            font=f2, fill=STAMP_RED)
-    stamp = stamp.rotate(-4, expand=True, resample=Image.BICUBIC)
-    img.paste(stamp, (400, FOOTER_TOP + 22), stamp)
-
-    # mini chair no. 12, bottom-right, with a JUDGE name tag
-    cx0, cy0 = 872, FOOTER_TOP + 6
-    # backrest posts + slats
-    d.rectangle([cx0, cy0, cx0 + 8, cy0 + 78], fill=WOOD)
-    d.rectangle([cx0 + 82, cy0, cx0 + 90, cy0 + 78], fill=WOOD)
-    d.rectangle([cx0, cy0, cx0 + 90, cy0 + 10], fill=WOOD)
-    d.rectangle([cx0, cy0 + 28, cx0 + 90, cy0 + 38], fill=WOOD)
+def draw_footer():
+    # signature (hand-drawn strokes) + flourish underline
+    draw_signature(72, 916, INK)
+    line(72, 958, 264, 958, ACCENT, 3)
+    # stamp: double-ruled box (outer + inner border) so it reads as a stamp
+    rect(320, 904, 240, 64, PAPER)
+    rect(320, 904, 240, 3, ACCENT)
+    rect(320, 965, 240, 3, ACCENT)
+    rect(320, 904, 3, 64, ACCENT)
+    rect(557, 904, 3, 64, ACCENT)
+    rect(328, 912, 224, 2, ACCENT)
+    rect(328, 958, 224, 2, ACCENT)
+    rect(328, 912, 2, 48, ACCENT)
+    rect(550, 912, 2, 48, ACCENT)
+    t1 = "HOUSE No. 12"
+    t2 = "SUNDAY, NOON"
+    draw_word(440 - glyph_w(t1, 2) // 2, 916, t1, 2, ACCENT)
+    draw_word(440 - glyph_w(t2, 2) // 2, 940, t2, 2, ACCENT)
+    # mini chair No. 12, bottom right, with JUDGE name tag
+    rect(852, 906, 10, 104, WOOD)   # back posts
+    rect(946, 906, 10, 104, WOOD)
+    rect(852, 906, 104, 10, WOOD)   # top rail
+    rect(852, 936, 104, 8, WOOD)    # middle rail
+    # name tag taped on the backrest
+    rect(866, 914, 76, 20, PAPER)
+    rect(866, 914, 76, 2, TRIM)
+    rect(866, 932, 76, 2, TRIM)
+    draw_word(904 - glyph_w("JUDGE", 2) // 2, 918, "JUDGE", 2, INK)
     # seat + legs
-    d.rectangle([cx0 - 6, cy0 + 78, cx0 + 96, cy0 + 90], fill=WOOD)
-    d.rectangle([cx0, cy0 + 90, cx0 + 8, cy0 + 128], fill=WOOD_DARK)
-    d.rectangle([cx0 + 82, cy0 + 90, cx0 + 90, cy0 + 128], fill=WOOD_DARK)
-    d.rectangle([cx0 + 8, cy0 + 108, cx0 + 82, cy0 + 114], fill=WOOD_DARK)
-    # name tag taped to the backrest
-    tag = Image.new("RGBA", (76, 30), (0, 0, 0, 0))
-    td = ImageDraw.Draw(tag)
-    td.rectangle([0, 0, 75, 29], fill=(255, 252, 240), outline=INK, width=1)
-    ftag = font(SERIF_BOLD, 17)
-    tt = "JUDGE"
-    td.text(((76 - td.textlength(tt, font=ftag)) / 2, 5), tt,
-            font=ftag, fill=INK)
-    tag = tag.rotate(-6, expand=True, resample=Image.BICUBIC)
-    img.paste(tag, (cx0 + 8, cy0 + 38), tag)
+    rect(838, 976, 132, 12, WOOD)
+    rect(844, 988, 10, 22, WOOD)
+    rect(954, 988, 10, 22, WOOD)
+    rect(884, 988, 8, 22, WOOD)
+    rect(918, 988, 8, 22, WOOD)
+    # "12" on a dark badge pinned to the seat front: strong contrast
+    rect(880, 974, 52, 22, DARKWOOD)
+    draw_word(892, 979, "12", 2, WHITE, bold=True)
+
+
+# ---------------------------------------------------------------- PNG out
+def chunk(tag, data):
+    out = struct.pack(">I", len(data)) + tag + data
+    out += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return out
+
+
+def write_png(path):
+    raw = bytearray()
+    row = bytearray(W * 3 + 1)
+    for y in range(H):
+        row[0] = 0
+        row[1:] = buf[y * W * 3:(y + 1) * W * 3]
+        raw += row
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", ihdr)
+    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += chunk(b"IEND", b"")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(png)
+    return len(png)
 
 
 def main():
-    os.makedirs("/output", exist_ok=True)
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    draw_header(img, d)
-    # rebind draw after header pastes (paste keeps same image; d stays valid)
-    d = ImageDraw.Draw(img)
-    draw_body(img, d)
-    d = ImageDraw.Draw(img)
-    draw_footer(img, d)
-    img.save(OUT, format="PNG", optimize=True)
-    print("saved", OUT, img.size, os.path.getsize(OUT), "bytes")
+    rect(0, 0, W, H, BG)
+    draw_header()
+    # letter paper
+    rect(32, 272, 960, 612, PAPER)
+    rect(32, 272, 960, 4, TRIM)
+    rect(32, 880, 960, 4, TRIM)
+    rect(32, 272, 4, 612, TRIM)
+    rect(988, 272, 4, 612, TRIM)
+    # greeting, larger
+    gx, gy = 56, 296
+    draw_word(gx, gy, PARAS[0], 5, INK)
+    line(gx, gy + 44, gx + glyph_w(PARAS[0], 5), gy + 44, ACCENT, 3)
+    # body paragraphs, scale 3
+    y = gy + 60
+    body_x = 56
+    body_w = 912
+    line_h = 25
+    para_gap = 8
+    for i, para in enumerate(PARAS[1:]):
+        lines = wrap_para(para, body_w, 3)
+        for ln in lines:
+            draw_line(body_x, y, ln, 3)
+            y += line_h
+        if i < len(PARAS[1:]) - 1:
+            y += para_gap
+    draw_footer()
+    n = write_png(OUT)
+    return n
 
 
 if __name__ == "__main__":
